@@ -1,0 +1,28 @@
+# CODEOWNERS for AI Prompt Marketplace
+# This file defines who reviews and approves changes to specific parts of the codebase
+
+# Default owners for everything in the repo
+* @juanpasaflipz
+
+# API and Backend
+/api/ @juanpasaflipz
+/api/models/ @juanpasaflipz
+/api/routes/ @juanpasaflipz
+/api/services/ @juanpasaflipz
+
+# Database
+/alembic/ @juanpasaflipz
+/db/ @juanpasaflipz
+
+# Infrastructure
+/docker/ @juanpasaflipz
+/scripts/ @juanpasaflipz
+/.github/ @juanpasaflipz
+
+# Documentation
+/docs/ @juanpasaflipz
+*.md @juanpasaflipz
+
+# Configuration
+.env.example @juanpasaflipz
+requirements.txt @juanpasaflipz
