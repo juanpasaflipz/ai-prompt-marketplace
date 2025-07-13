@@ -9,6 +9,7 @@ from api.models.user import User
 from api.models.prompt import Prompt
 from api.middleware.auth import get_current_user
 from api.services.analytics_service import AnalyticsService
+from api.services.analytics_funnel import FunnelAnalytics
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])

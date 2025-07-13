@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
 from typing import List, Optional, Any
 import logging
+import uuid
 
 from api.database import get_db
 from api.models.user import User
@@ -23,6 +24,7 @@ from api.schemas.prompt import (
 )
 from api.middleware.auth import get_current_user, require_role
 from api.services.analytics_service import AnalyticsService
+from api.services.analytics_funnel import FunnelAnalytics
 from api.services.cache_service import get_cache_service
 from api.config import settings
 from integrations.stripe.client import StripeClient
@@ -259,6 +261,7 @@ async def list_prompts(
 @router.get("/{prompt_id}", response_model=PromptResponse)
 async def get_prompt(
     prompt_id: int,
+    request: Request,
     current_user: Optional[User] = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -272,6 +275,9 @@ async def get_prompt(
         logger.debug(f"Cache hit for prompt {prompt_id}")
         # Still track view event for cached results
         if current_user:
+            session_id = request.headers.get("X-Session-ID", str(uuid.uuid4()))
+            
+            # Track standard event
             await analytics_service.track_event(
                 user_id=current_user.id,
                 event_type="prompt_viewed",
@@ -279,6 +285,20 @@ async def get_prompt(
                 metadata={
                     "category": cached_result.get("category"),
                     "from_cache": True
+                }
+            )
+            
+            # Track funnel event
+            FunnelAnalytics.track_funnel_event(
+                db=db,
+                user_id=str(current_user.id),
+                event_type="prompt_viewed",
+                funnel_name="purchase",
+                session_id=session_id,
+                metadata={
+                    "prompt_id": prompt_id,
+                    "category": cached_result.get("category"),
+                    "price": cached_result.get("price")
                 }
             )
         return PromptResponse(**cached_result)
@@ -295,11 +315,28 @@ async def get_prompt(
     
     # Track view event
     if current_user:
+        session_id = request.headers.get("X-Session-ID", str(uuid.uuid4()))
+        
         await analytics_service.track_event(
             user_id=current_user.id,
             event_type="prompt_viewed",
             prompt_id=prompt.id,
             metadata={"category": prompt.category}
+        )
+        
+        # Track funnel event
+        FunnelAnalytics.track_funnel_event(
+            db=db,
+            user_id=str(current_user.id),
+            event_type="prompt_viewed",
+            funnel_name="purchase",
+            session_id=session_id,
+            metadata={
+                "prompt_id": prompt.id,
+                "category": prompt.category,
+                "price": float(prompt.price),
+                "seller_id": prompt.seller_id
+            }
         )
     
     response = PromptResponse(
@@ -314,6 +351,50 @@ async def get_prompt(
     logger.debug(f"Cached prompt detail: {cache_key}")
     
     return response
+
+
+@router.post("/{prompt_id}/click")
+async def track_prompt_click(
+    prompt_id: int,
+    request: Request,
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Track when a user clicks on a prompt for detailed view"""
+    if current_user:
+        session_id = request.headers.get("X-Session-ID", str(uuid.uuid4()))
+        
+        # Get prompt for metadata
+        prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+        if prompt:
+            # Track standard click event
+            await analytics_service.track_event(
+                user_id=current_user.id,
+                event_type="prompt_clicked",
+                prompt_id=prompt_id,
+                metadata={
+                    "category": prompt.category,
+                    "price": float(prompt.price)
+                }
+            )
+            
+            # Track funnel event
+            FunnelAnalytics.track_funnel_event(
+                db=db,
+                user_id=str(current_user.id),
+                event_type="prompt_clicked",
+                funnel_name="purchase",
+                session_id=session_id,
+                metadata={
+                    "prompt_id": prompt_id,
+                    "category": prompt.category,
+                    "price": float(prompt.price)
+                }
+            )
+            
+            db.commit()
+    
+    return {"status": "tracked"}
 
 
 @router.put("/{prompt_id}", response_model=PromptResponse)
@@ -414,10 +495,12 @@ async def delete_prompt(
 async def purchase_prompt(
     prompt_id: int,
     purchase_request: PromptPurchaseRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Purchase a prompt"""
+    session_id = request.headers.get("X-Session-ID", str(uuid.uuid4()))
     # Get the prompt
     prompt = db.query(Prompt).filter(
         Prompt.id == prompt_id,
@@ -437,6 +520,20 @@ async def purchase_prompt(
     if existing_purchase:
         raise HTTPException(status_code=400, detail="Prompt already purchased")
     
+    # Track checkout started
+    FunnelAnalytics.track_funnel_event(
+        db=db,
+        user_id=str(current_user.id),
+        event_type="checkout_started",
+        funnel_name="purchase",
+        session_id=session_id,
+        metadata={
+            "prompt_id": prompt_id,
+            "price": float(prompt.price),
+            "seller_id": prompt.seller_id
+        }
+    )
+    
     try:
         # Create payment intent with Stripe
         payment_intent = await stripe_client.create_payment_intent(
@@ -448,6 +545,20 @@ async def purchase_prompt(
                 "seller_id": str(prompt.seller_id)
             },
             payment_method_id=purchase_request.payment_method_id
+        )
+        
+        # Track payment initiated
+        FunnelAnalytics.track_funnel_event(
+            db=db,
+            user_id=str(current_user.id),
+            event_type="payment_initiated",
+            funnel_name="purchase",
+            session_id=session_id,
+            metadata={
+                "prompt_id": prompt_id,
+                "amount": float(prompt.price),
+                "payment_intent_id": payment_intent["id"]
+            }
         )
         
         # Create transaction record
@@ -480,6 +591,20 @@ async def purchase_prompt(
                 metadata={
                     "amount": float(prompt.price),
                     "seller_id": prompt.seller_id
+                }
+            )
+            
+            # Track funnel completion
+            FunnelAnalytics.track_funnel_event(
+                db=db,
+                user_id=str(current_user.id),
+                event_type="prompt_purchased",
+                funnel_name="purchase",
+                session_id=session_id,
+                metadata={
+                    "prompt_id": prompt_id,
+                    "amount": float(prompt.price),
+                    "transaction_id": str(transaction.id)
                 }
             )
         

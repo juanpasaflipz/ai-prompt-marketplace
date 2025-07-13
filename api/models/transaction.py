@@ -28,6 +28,7 @@ class Transaction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     buyer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     prompt_id = Column(UUID(as_uuid=True), ForeignKey("prompts.id"), nullable=True)
     stripe_payment_id = Column(String(255), unique=True, nullable=True)
     stripe_payment_intent_id = Column(String(255), unique=True, nullable=True)
@@ -50,6 +51,7 @@ class Transaction(Base):
     # Relationships
     buyer = relationship("User", back_populates="transactions")
     prompt = relationship("Prompt", back_populates="transactions")
+    rating = relationship("PromptRating", back_populates="transaction", uselist=False)
 
     def __repr__(self):
         return f"<Transaction {self.id} - {self.status.value}>"

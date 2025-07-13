@@ -4,7 +4,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 import logging
 from api.config import settings
-from api.routes import auth, prompts, marketplace, webhooks, api_keys
+from api.routes import auth, prompts, marketplace, webhooks, api_keys, analytics, subscriptions, sharing, ratings, leaderboards
 from api.middleware.analytics import AnalyticsMiddleware
 from api.middleware.rate_limit import RateLimitMiddleware, limiter, add_rate_limit_handler
 from api.middleware.api_key_auth import APIKeyAuthMiddleware
@@ -93,7 +93,11 @@ app.include_router(prompts.router, prefix=f"{settings.api_v1_prefix}/prompts", t
 app.include_router(marketplace.router, prefix=f"{settings.api_v1_prefix}/marketplace", tags=["Marketplace"])
 app.include_router(webhooks.router, prefix=f"{settings.api_v1_prefix}/webhooks", tags=["Webhooks"])
 app.include_router(api_keys.router, prefix=f"{settings.api_v1_prefix}/api-keys", tags=["API Keys"])
-# app.include_router(analytics.router, prefix=f"{settings.api_v1_prefix}/analytics", tags=["Analytics"])
+app.include_router(analytics.router, prefix=f"{settings.api_v1_prefix}/analytics", tags=["Analytics"])
+app.include_router(subscriptions.router, prefix=f"{settings.api_v1_prefix}/subscriptions", tags=["Subscriptions"])
+app.include_router(sharing.router, prefix=f"{settings.api_v1_prefix}/share", tags=["Social Sharing"])
+app.include_router(ratings.router, prefix=f"{settings.api_v1_prefix}/ratings", tags=["Ratings & Reviews"])
+app.include_router(leaderboards.router, prefix=f"{settings.api_v1_prefix}/leaderboards", tags=["Leaderboards & Gamification"])
 
 # Root endpoint
 @app.get("/")

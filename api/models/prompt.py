@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Numeric, Text, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, String, Integer, Numeric, Text, DateTime, ForeignKey, Enum, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -39,18 +39,19 @@ class Prompt(Base):
     seller_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     title = Column(String(255), nullable=False, index=True)
     description = Column(Text)
-    category = Column(Enum(PromptCategory), nullable=False, index=True)
+    category = Column(String(50), nullable=False, index=True)  # Changed from Enum to String
     model_type = Column(Enum(ModelType), default=ModelType.GPT_4O, nullable=False)
     prompt_template = Column(Text, nullable=False)
     variables = Column(JSONB, default={})  # Store template variables
     example_input = Column(Text)
     example_output = Column(Text)
-    price_per_use = Column(Numeric(10, 2), nullable=False)
-    total_uses = Column(Integer, default=0)
+    price = Column(Numeric(10, 2), nullable=False)  # Renamed from price_per_use
+    subcategory = Column(String(100), nullable=True)  # Added subcategory
+    total_sales = Column(Integer, default=0)  # Renamed from total_uses
     total_revenue = Column(Numeric(12, 2), default=0)
-    average_rating = Column(Numeric(3, 2))
+    rating_average = Column(Numeric(3, 2))  # Renamed from average_rating
     rating_count = Column(Integer, default=0)
-    status = Column(Enum(PromptStatus), default=PromptStatus.PENDING, nullable=False)
+    is_active = Column(Boolean, default=True)  # Changed from status enum
     version = Column(Integer, default=1)
     tags = Column(JSONB, default=[])  # Store tags as JSON array
     extra_metadata = Column(JSONB, default={})  # Additional metadata
@@ -64,6 +65,8 @@ class Prompt(Base):
     transactions = relationship(
         "Transaction", back_populates="prompt", cascade="all, delete-orphan"
     )
+    shares = relationship("PromptShare", back_populates="prompt", cascade="all, delete-orphan")
+    ratings = relationship("PromptRating", back_populates="prompt", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Prompt {self.title}>"
@@ -74,12 +77,12 @@ class Prompt(Base):
             "seller_id": str(self.seller_id),
             "title": self.title,
             "description": self.description,
-            "category": self.category.value,
+            "category": self.category,
             "model_type": self.model_type.value,
-            "price_per_use": float(self.price_per_use),
-            "total_uses": self.total_uses,
-            "average_rating": float(self.average_rating) if self.average_rating else None,
-            "status": self.status.value,
+            "price": float(self.price),
+            "total_sales": self.total_sales,
+            "rating_average": float(self.rating_average) if self.rating_average else None,
+            "is_active": self.is_active,
             "tags": self.tags,
             "created_at": self.created_at.isoformat(),
         }

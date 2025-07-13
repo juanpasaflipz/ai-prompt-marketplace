@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # API Configuration
     api_v1_prefix: str = "/api/v1"
     allowed_origins: str = "http://localhost:3000,http://localhost:8000"
+    app_base_url: str = "http://localhost:3000"  # Frontend URL for share links
 
     # Database
     database_url: str
@@ -44,6 +45,13 @@ class Settings(BaseSettings):
     stripe_publishable_key: str
     stripe_webhook_secret: str
     stripe_price_id_basic: str = ""
+    # Subscription price IDs
+    stripe_basic_base_price_id: str = ""
+    stripe_basic_usage_price_id: str = ""
+    stripe_pro_base_price_id: str = ""
+    stripe_pro_usage_price_id: str = ""
+    stripe_enterprise_base_price_id: str = ""
+    stripe_enterprise_usage_price_id: str = ""
 
     # OpenAI
     openai_api_key: str

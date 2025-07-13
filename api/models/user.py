@@ -32,7 +32,11 @@ class User(Base):
     subscription_status = Column(
         Enum(SubscriptionStatus), default=SubscriptionStatus.TRIAL, nullable=False
     )
+    subscription_plan = Column(String(50), nullable=True)  # basic, professional, enterprise
+    subscription_id = Column(String(255), nullable=True)  # Stripe subscription ID
+    subscription_usage_item_id = Column(String(255), nullable=True)  # For metered billing
     is_active = Column(String, default="true")
+    full_name = Column(String(255), nullable=True)  # Added for seller profiles
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -48,6 +52,12 @@ class User(Base):
     )
     api_keys = relationship(
         "APIKey", back_populates="user", cascade="all, delete-orphan"
+    )
+    shared_prompts = relationship(
+        "PromptShare", back_populates="user", cascade="all, delete-orphan"
+    )
+    ratings_given = relationship(
+        "PromptRating", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self):
