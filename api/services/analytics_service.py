@@ -6,10 +6,10 @@ from sqlalchemy import func, and_
 from api.models.analytics import AnalyticsEvent
 from api.database import get_db
 from api.config import settings
+from api.services.cache_service import get_cache_service
+from api.tasks.analytics import flush_analytics_events
 import json
 import logging
-import asyncio
-from collections import deque
 import threading
 
 logger = logging.getLogger(__name__)
@@ -62,29 +62,17 @@ class AnalyticsService:
         if self._initialized:
             return
             
-        self.event_queue = deque()
+        # Initialize cache service
+        self.cache = get_cache_service(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            password=settings.redis_password,
+            db=settings.redis_db
+        )
+        self.events_key = "analytics:events:batch"
         self.batch_size = settings.analytics_batch_size
         self.flush_interval = settings.analytics_flush_interval
-        self._flush_task = None
         self._initialized = True
-        
-        # Start background flush task
-        self._start_flush_task()
-    
-    def _start_flush_task(self):
-        """Start background task to flush events periodically"""
-        async def flush_periodically():
-            while True:
-                await asyncio.sleep(self.flush_interval)
-                if self.event_queue:
-                    self._flush_events()
-        
-        try:
-            loop = asyncio.get_running_loop()
-            self._flush_task = loop.create_task(flush_periodically())
-        except RuntimeError:
-            # No event loop running yet
-            pass
     
     def track_event(
         self,
@@ -112,33 +100,49 @@ class AnalyticsService:
             "created_at": datetime.utcnow()
         }
         
-        self.event_queue.append(event)
-        
-        # Flush if batch size reached
-        if len(self.event_queue) >= self.batch_size:
-            self._flush_events()
+        # Get current batch from cache
+        with self._lock:
+            current_batch = self.cache.get(self.events_key, serialization='pickle', default=[])
+            current_batch.append(event)
+            
+            # Save updated batch to cache
+            self.cache.set(self.events_key, current_batch, serialization='pickle')
+            
+            # Trigger flush if batch size reached
+            if len(current_batch) >= self.batch_size:
+                self._flush_events()
     
     def _flush_events(self):
-        """Batch insert events to database"""
-        if not self.event_queue:
-            return
-        
-        events_to_flush = []
-        while self.event_queue and len(events_to_flush) < self.batch_size:
-            events_to_flush.append(self.event_queue.popleft())
-        
+        """Trigger Celery task to flush events to database"""
         try:
-            db = next(get_db())
-            db.bulk_insert_mappings(AnalyticsEvent, events_to_flush)
-            db.commit()
-            logger.info(f"Flushed {len(events_to_flush)} analytics events")
+            # Trigger the Celery task
+            flush_analytics_events.delay()
+            logger.info("Triggered analytics flush task")
         except Exception as e:
-            logger.error(f"Error flushing analytics events: {e}")
-            # Put events back in queue on failure
-            for event in reversed(events_to_flush):
-                self.event_queue.appendleft(event)
-        finally:
-            db.close()
+            logger.error(f"Error triggering analytics flush task: {e}")
+    
+    def flush_events_now(self):
+        """Manually trigger event flush (useful for graceful shutdown)"""
+        try:
+            # Check if there are events to flush
+            current_batch = self.cache.get(self.events_key, serialization='pickle', default=[])
+            if current_batch:
+                flush_analytics_events.delay()
+                logger.info(f"Manually triggered flush for {len(current_batch)} events")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error in manual flush: {e}")
+            return False
+    
+    def get_queue_size(self) -> int:
+        """Get the current number of events in the queue"""
+        try:
+            current_batch = self.cache.get(self.events_key, serialization='pickle', default=[])
+            return len(current_batch)
+        except Exception as e:
+            logger.error(f"Error getting queue size: {e}")
+            return 0
     
     def get_prompt_analytics(self, prompt_id: str, days: int = 30, db: Session = None) -> Dict[str, Any]:
         """Get comprehensive analytics for a prompt"""

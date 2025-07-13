@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, func
-from typing import List, Optional
+from typing import List, Optional, Any
 import logging
 
 from api.database import get_db
@@ -23,6 +23,8 @@ from api.schemas.prompt import (
 )
 from api.middleware.auth import get_current_user, require_role
 from api.services.analytics_service import AnalyticsService
+from api.services.cache_service import get_cache_service
+from api.config import settings
 from integrations.stripe.client import StripeClient
 from integrations.openai.client import OpenAIClient
 
@@ -32,6 +34,51 @@ router = APIRouter(prefix="/prompts", tags=["prompts"])
 analytics_service = AnalyticsService()
 stripe_client = StripeClient()
 openai_client = OpenAIClient()
+
+# Initialize cache service
+cache = get_cache_service(
+    host=settings.redis_host,
+    port=settings.redis_port,
+    password=settings.redis_password,
+    db=settings.redis_db,
+    decode_responses=settings.redis_decode_responses
+)
+
+
+def safe_cache_get(key: str, default=None):
+    """Safely get value from cache with error handling"""
+    try:
+        return cache.get(key) if settings.cache_enabled else default
+    except Exception as e:
+        logger.warning(f"Cache get failed for key {key}: {e}")
+        return default
+
+
+def safe_cache_set(key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    """Safely set value in cache with error handling"""
+    try:
+        return cache.set(key, value, ttl=ttl) if settings.cache_enabled else False
+    except Exception as e:
+        logger.warning(f"Cache set failed for key {key}: {e}")
+        return False
+
+
+def safe_cache_delete(*keys: str) -> int:
+    """Safely delete keys from cache with error handling"""
+    try:
+        return cache.delete(*keys) if settings.cache_enabled else 0
+    except Exception as e:
+        logger.warning(f"Cache delete failed for keys {keys}: {e}")
+        return 0
+
+
+def safe_cache_clear_pattern(pattern: str) -> int:
+    """Safely clear cache pattern with error handling"""
+    try:
+        return cache.clear_pattern(pattern) if settings.cache_enabled else 0
+    except Exception as e:
+        logger.warning(f"Cache clear pattern failed for {pattern}: {e}")
+        return 0
 
 
 @router.post("/", response_model=PromptResponse)
@@ -51,6 +98,10 @@ async def create_prompt(
         db.add(prompt)
         db.commit()
         db.refresh(prompt)
+        
+        # Invalidate prompt list caches since a new prompt was created
+        safe_cache_clear_pattern("prompts:list*")
+        logger.debug(f"Invalidated prompt list cache after creating prompt {prompt.id}")
         
         # Track analytics
         await analytics_service.track_event(
@@ -83,6 +134,42 @@ async def list_prompts(
 ):
     """List and search prompts with filtering"""
     try:
+        # Generate cache key based on search parameters
+        cache_key = cache.generate_key(
+            "prompts:list",
+            query=search_params.query,
+            category=search_params.category,
+            subcategory=search_params.subcategory,
+            tags=",".join(search_params.tags) if search_params.tags else None,
+            min_price=search_params.min_price,
+            max_price=search_params.max_price,
+            model_type=search_params.model_type,
+            seller_id=search_params.seller_id,
+            sort_by=search_params.sort_by,
+            sort_order=search_params.sort_order,
+            page=search_params.page,
+            per_page=search_params.per_page
+        )
+        
+        # Try to get from cache first
+        cached_result = safe_cache_get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for prompts list: {cache_key}")
+            # Still track analytics for cached results
+            if current_user:
+                await analytics_service.track_event(
+                    user_id=current_user.id,
+                    event_type="prompts_searched",
+                    metadata={
+                        "query": search_params.query,
+                        "category": search_params.category,
+                        "results_count": len(cached_result.get("prompts", [])),
+                        "from_cache": True
+                    }
+                )
+            return PromptListResponse(**cached_result)
+        
+        logger.debug(f"Cache miss for prompts list: {cache_key}")
         # Build query
         query = db.query(Prompt).join(User).filter(Prompt.is_active == True)
         
@@ -149,13 +236,20 @@ async def list_prompts(
                 seller_company=prompt.seller.company_name
             ))
         
-        return PromptListResponse(
+        response = PromptListResponse(
             prompts=prompt_responses,
             total=total,
             page=search_params.page,
             per_page=search_params.per_page,
             pages=(total + search_params.per_page - 1) // search_params.per_page
         )
+        
+        # Cache the result with 30-minute TTL
+        cache_data = response.model_dump()
+        safe_cache_set(cache_key, cache_data, ttl=settings.cache_prompt_ttl)
+        logger.debug(f"Cached prompts list result: {cache_key}")
+        
+        return response
         
     except Exception as e:
         logger.error(f"Error listing prompts: {e}")
@@ -169,6 +263,28 @@ async def get_prompt(
     db: Session = Depends(get_db)
 ):
     """Get a specific prompt by ID"""
+    # Generate cache key
+    cache_key = cache.generate_key("prompt:detail", prompt_id=prompt_id)
+    
+    # Try to get from cache first
+    cached_result = safe_cache_get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"Cache hit for prompt {prompt_id}")
+        # Still track view event for cached results
+        if current_user:
+            await analytics_service.track_event(
+                user_id=current_user.id,
+                event_type="prompt_viewed",
+                prompt_id=prompt_id,
+                metadata={
+                    "category": cached_result.get("category"),
+                    "from_cache": True
+                }
+            )
+        return PromptResponse(**cached_result)
+    
+    logger.debug(f"Cache miss for prompt {prompt_id}")
+    
     prompt = db.query(Prompt).join(User).filter(
         Prompt.id == prompt_id,
         Prompt.is_active == True
@@ -186,11 +302,18 @@ async def get_prompt(
             metadata={"category": prompt.category}
         )
     
-    return PromptResponse(
+    response = PromptResponse(
         **prompt.to_dict(),
         seller_name=prompt.seller.full_name or prompt.seller.email,
         seller_company=prompt.seller.company_name
     )
+    
+    # Cache the result with 30-minute TTL
+    cache_data = response.model_dump()
+    safe_cache_set(cache_key, cache_data, ttl=settings.cache_prompt_ttl)
+    logger.debug(f"Cached prompt detail: {cache_key}")
+    
+    return response
 
 
 @router.put("/{prompt_id}", response_model=PromptResponse)
@@ -217,6 +340,18 @@ async def update_prompt(
     
     db.commit()
     db.refresh(prompt)
+    
+    # Invalidate cache for this prompt and all prompt lists
+    # Invalidate specific prompt cache
+    prompt_cache_key = cache.generate_key("prompt:detail", prompt_id=prompt_id)
+    safe_cache_delete(prompt_cache_key)
+    
+    # Invalidate download cache for this prompt
+    safe_cache_clear_pattern(f"prompt:download:{prompt_id}*")
+    
+    # Invalidate all prompt list caches by pattern
+    safe_cache_clear_pattern("prompts:list*")
+    logger.debug(f"Invalidated cache for updated prompt {prompt_id}")
     
     # Track analytics
     await analytics_service.track_event(
@@ -252,6 +387,18 @@ async def delete_prompt(
     # Soft delete
     prompt.is_active = False
     db.commit()
+    
+    # Invalidate cache for this prompt and all prompt lists
+    # Invalidate specific prompt cache
+    prompt_cache_key = cache.generate_key("prompt:detail", prompt_id=prompt_id)
+    safe_cache_delete(prompt_cache_key)
+    
+    # Invalidate download cache for this prompt
+    safe_cache_clear_pattern(f"prompt:download:{prompt_id}*")
+    
+    # Invalidate all prompt list caches by pattern
+    safe_cache_clear_pattern("prompts:list*")
+    logger.debug(f"Invalidated cache for deleted prompt {prompt_id}")
     
     # Track analytics
     await analytics_service.track_event(
@@ -369,10 +516,33 @@ async def download_prompt(
     if not transaction:
         raise HTTPException(status_code=403, detail="Prompt not purchased")
     
-    # Get the prompt
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    # Define a cached function for getting prompt download data
+    @cache.cached(
+        ttl=settings.cache_prompt_ttl,
+        key_prefix=f"prompt:download:{prompt_id}",
+        serialization='json'
+    )
+    def get_prompt_download_data():
+        # Get the prompt
+        prompt_data = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+        
+        if not prompt_data:
+            return None
+        
+        return {
+            "prompt_id": prompt_data.id,
+            "title": prompt_data.title,
+            "template": prompt_data.template,
+            "variables": prompt_data.variables,
+            "usage_notes": prompt_data.usage_notes,
+            "model_type": prompt_data.model_type,
+            "performance_metrics": prompt_data.performance_metrics
+        }
     
-    if not prompt:
+    # Get prompt data (will use cache if available)
+    prompt_details = get_prompt_download_data()
+    
+    if not prompt_details:
         raise HTTPException(status_code=404, detail="Prompt not found")
     
     # Track download
@@ -382,16 +552,7 @@ async def download_prompt(
         prompt_id=prompt_id
     )
     
-    # Return prompt details
-    return {
-        "prompt_id": prompt.id,
-        "title": prompt.title,
-        "template": prompt.template,
-        "variables": prompt.variables,
-        "usage_notes": prompt.usage_notes,
-        "model_type": prompt.model_type,
-        "performance_metrics": prompt.performance_metrics
-    }
+    return prompt_details
 
 
 @router.post("/{prompt_id}/test", response_model=PromptTestResponse)

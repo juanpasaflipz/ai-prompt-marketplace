@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 from functools import lru_cache
 
 
@@ -20,8 +20,18 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 20
 
-    # Redis
+    # Redis & Caching
     redis_url: str = "redis://localhost:6379/0"
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_password: Optional[str] = None
+    redis_db: int = 0
+    redis_decode_responses: bool = True
+    redis_max_connections: int = 10
+    cache_enabled: bool = True
+    cache_default_ttl: int = 3600  # 1 hour
+    cache_prompt_ttl: int = 1800  # 30 minutes for prompts
+    cache_user_ttl: int = 900  # 15 minutes for user data
 
     # Authentication
     jwt_secret_key: str

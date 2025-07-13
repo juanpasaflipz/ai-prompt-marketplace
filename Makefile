@@ -1,16 +1,19 @@
-.PHONY: help install dev test deploy clean migrate seed lint format docker-up docker-down
+.PHONY: help install dev test deploy clean migrate seed lint format docker-up docker-down celery celery-beat celery-flower
 
 help:
 	@echo "Available commands:"
-	@echo "  make install   - Install dependencies"
-	@echo "  make dev       - Start development server"
-	@echo "  make test      - Run all tests"
-	@echo "  make lint      - Run code linters"
-	@echo "  make format    - Format code"
-	@echo "  make migrate   - Run database migrations"
-	@echo "  make seed      - Seed database"
-	@echo "  make docker-up - Start Docker services"
-	@echo "  make clean     - Clean up temporary files"
+	@echo "  make install     - Install dependencies"
+	@echo "  make dev         - Start development server"
+	@echo "  make test        - Run all tests"
+	@echo "  make lint        - Run code linters"
+	@echo "  make format      - Format code"
+	@echo "  make migrate     - Run database migrations"
+	@echo "  make seed        - Seed database"
+	@echo "  make docker-up   - Start Docker services"
+	@echo "  make clean       - Clean up temporary files"
+	@echo "  make celery      - Start Celery worker"
+	@echo "  make celery-beat - Start Celery beat scheduler"
+	@echo "  make celery-flower - Start Celery monitoring"
 
 install:
 	@echo "📦 Installing dependencies..."
@@ -99,6 +102,19 @@ shell:
 db-shell:
 	@echo "🗄️ Opening database shell..."
 	docker exec -it prompt-marketplace-postgres psql -U postgres -d prompt_marketplace
+
+# Celery Commands
+celery:
+	@echo "🔄 Starting Celery worker..."
+	celery -A celery_worker worker --loglevel=info
+
+celery-beat:
+	@echo "⏰ Starting Celery beat scheduler..."
+	celery -A celery_beat beat --loglevel=info
+
+celery-flower:
+	@echo "🌸 Starting Celery Flower monitoring..."
+	celery -A celery_worker flower --port=5555
 
 # CLI Commands
 cli-users:

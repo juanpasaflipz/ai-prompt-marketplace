@@ -7,6 +7,7 @@ from api.schemas.user import UserCreate, UserLogin, UserResponse, TokenResponse,
 from api.services.auth_service import AuthService
 from api.services.analytics_service import AnalyticsService, EventType
 from api.middleware.auth import get_current_active_user
+from api.middleware.rate_limit import auth_limit, rate_limit
 from api.models.user import User
 from api.config import settings
 from integrations.stripe.client import StripeClient
@@ -18,6 +19,7 @@ analytics = AnalyticsService()
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@auth_limit
 async def register(
     user_data: UserCreate,
     request: Request,
@@ -79,6 +81,7 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@auth_limit
 async def login(
     user_credentials: UserLogin,
     request: Request,
@@ -192,6 +195,7 @@ async def update_profile(
 
 
 @router.post("/password-reset/request")
+@rate_limit("3/10minute")  # More restrictive: 3 requests per 10 minutes
 async def request_password_reset(
     request_data: PasswordResetRequest,
     db: Session = Depends(get_db)
@@ -209,6 +213,7 @@ async def request_password_reset(
 
 
 @router.post("/password-reset/confirm")
+@auth_limit  # Standard auth rate limit for password reset confirmation
 async def confirm_password_reset(
     reset_data: PasswordReset,
     db: Session = Depends(get_db)

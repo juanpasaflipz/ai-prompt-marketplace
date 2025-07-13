@@ -4,9 +4,13 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 import logging
 from api.config import settings
-from api.routes import auth, prompts, marketplace, webhooks
+from api.routes import auth, prompts, marketplace, webhooks, api_keys
 from api.middleware.analytics import AnalyticsMiddleware
+from api.middleware.rate_limit import RateLimitMiddleware, limiter, add_rate_limit_handler
+from api.middleware.api_key_auth import APIKeyAuthMiddleware
 from api.database import engine, Base
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 import time
 
 # Configure logging
@@ -44,6 +48,12 @@ app = FastAPI(
     openapi_url="/openapi.json"
 )
 
+# Add rate limiter to app state
+app.state.limiter = limiter
+
+# Add rate limit exceeded handler
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Add security middleware
 app.add_middleware(
     TrustedHostMiddleware,
@@ -62,6 +72,12 @@ app.add_middleware(
 # Add custom analytics middleware
 app.add_middleware(AnalyticsMiddleware)
 
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware)
+
+# Add API key authentication middleware
+app.add_middleware(APIKeyAuthMiddleware)
+
 # Add request timing middleware
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
@@ -76,6 +92,7 @@ app.include_router(auth.router, prefix=f"{settings.api_v1_prefix}/auth", tags=["
 app.include_router(prompts.router, prefix=f"{settings.api_v1_prefix}/prompts", tags=["Prompts"])
 app.include_router(marketplace.router, prefix=f"{settings.api_v1_prefix}/marketplace", tags=["Marketplace"])
 app.include_router(webhooks.router, prefix=f"{settings.api_v1_prefix}/webhooks", tags=["Webhooks"])
+app.include_router(api_keys.router, prefix=f"{settings.api_v1_prefix}/api-keys", tags=["API Keys"])
 # app.include_router(analytics.router, prefix=f"{settings.api_v1_prefix}/analytics", tags=["Analytics"])
 
 # Root endpoint
